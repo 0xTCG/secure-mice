@@ -1,0 +1,145 @@
+""" Linear regression module """
+
+from numpy.ndarray import ndarray
+
+from sequre.attributes import sequre
+from sequre.settings import DEBUG
+from sequre.stdlib.builtin import inv
+from sequre.mpc.env import MPCEnv
+
+from sequre import MPU
+from utils import batch
+
+
+class LinReg[T]:
+    coef_: T
+    optimizer: str
+
+    def __init__(self):
+        self.coef_ = T()
+        self.optimizer = ""
+    
+    def __init__(self, mpc: MPCEnv):
+        self.coef_ = T(mpc) if isinstance(T, MPU) else T()
+        self.optimizer = ""
+    
+    def __init__(self, initial_weights: T, optimizer: str = "bgd"):
+        self.coef_ = initial_weights.copy()
+        self.optimizer = optimizer
+    
+    def fit(self, mpc, X: T, y: T, step: float, epochs: int, verbose: bool = False) -> LinReg[T]:
+        self.coef_ = LinReg._fit(mpc, X, y, self.coef_, step, epochs, self.optimizer, verbose)
+        return self
+    
+    def predict(self, mpc, X: T, noise_scale: float = 0.0) -> T:
+        return LinReg._predict(mpc, X, self.coef_, noise_scale)
+    
+    def loss(self, mpc, X: T, y: T) -> T:
+        return LinReg._loss(mpc, X, y, self.coef_)
+
+    def randomize_weights(self, mpc, distribution: str = "uniform"):
+        self.coef_ = self.coef_.rand(distribution, mpc)
+    
+    @staticmethod
+    def estimate_step(train, test) -> float:
+        cov_max = ndarray.max(train.T @ train)
+        ref_max = ndarray.max(train.T @ test)
+        return max(1 / (1 << 20), 1 / max(cov_max, ref_max))
+    
+    def _fit(mpc, X: T, y: T, initial_w: T, step: float, epochs: int, optimizer: str, verbose: bool, debug: Static[int] = DEBUG) -> T:
+        # Adding bias
+        X_tilde = X.pad_with_value(1, 1, 1, mpc)
+
+        if X_tilde.shape[1] < 4:
+            return LinReg._closed_form(mpc, X_tilde, y)
+        
+        # Gradient descent
+        if optimizer == "bgd":
+            return LinReg._bgd(mpc, X_tilde, y, initial_w, step, epochs, verbose, debug)
+        if optimizer == "mbgd":
+            return LinReg._mbgd(mpc, X_tilde, y, initial_w, step, epochs, 10, verbose, debug)
+        else:
+            raise ValueError(f"LinReg: invalid optimizer passed: {optimizer}")
+    
+    @sequre
+    def _bgd(mpc, X_tilde: T, y: T, initial_w: T, step: float, epochs: int, verbose: bool, debug: Static[int] = DEBUG) -> T:
+        if debug:
+            print(f"CP{mpc.pid}:\tLin. reg. BGD step size:", step)
+        
+        # Pre-compute invariants
+        cov = X_tilde.T @ X_tilde  # n x n
+        ref = X_tilde.T @ y  # n x 1
+
+        if debug:
+            print(f"CP{mpc.pid}:\tLin. reg. BGD cov avg:", ndarray.mean(cov.reveal(mpc)))
+            print(f"CP{mpc.pid}:\tLin. reg. BGD ref avg:", ndarray.mean(ref.reveal(mpc)))
+        
+        # Batched gradient descent
+        w = initial_w  # n x 1
+        for _ in range(epochs):
+            if verbose:
+                print(f"CP{mpc.pid}:\tLin. reg. BGD epoch {_ + 1}/{epochs}")
+            if debug:
+                print(f"CP{mpc.pid}:\t\t weigts avg {ndarray.mean(w.reveal(mpc))} | loss: {LinReg._loss(mpc, X_tilde, y, w).reveal(mpc)[0, 0]}")
+            
+            w += (ref - cov @ w) * step
+        
+        return w
+    
+    @sequre
+    def _mbgd(mpc, X_tilde: T, y: T, initial_w: T, step: float, epochs: int, batches: int, verbose: bool, debug: Static[int] = DEBUG) -> T:
+        if debug:
+            print(f"CP{mpc.pid}:\tLin. reg. BGD step size:", step)
+        
+        # Compute mini-batches
+        X_mini_batches = batch(mpc, X_tilde, batch_count=batches)
+        y_mini_batches = batch(mpc, y, batch_count=batches)
+        
+        # Pre-compute invariants
+        covs = []
+        refs = []
+        for i in range(batches):
+            X_mini_batch = X_mini_batches[i]
+            y_mini_batch = y_mini_batches[i]
+            
+            cov = X_mini_batch.T @ X_mini_batch
+            ref = X_mini_batch.T @ y_mini_batch
+            if debug:
+                print(f"CP{mpc.pid}:\tLin. reg. MBGD cov avg {i + 1}/{batches}:", ndarray.mean(cov.reveal(mpc)))
+                print(f"CP{mpc.pid}:\tLin. reg. MBGD ref avg {i + 1}/{batches}:", ndarray.mean(ref.reveal(mpc)))
+            
+            covs.append(cov)
+            refs.append(ref)
+        
+        # Mini-batched gradient descent
+        w = initial_w
+        for _ in range(epochs):
+            for i in range(batches):
+                if verbose:
+                    print(f"CP{mpc.pid}:\tLin. reg. MBGD epoch {_ + 1}/{epochs} -- batch {i + 1}/{batches}")
+                if debug:
+                    print(f"CP{mpc.pid}:\t\t weigts avg {ndarray.mean(w.reveal(mpc))} | loss: {LinReg._loss(mpc, X_mini_batches[i], y_mini_batches[i], w).reveal(mpc)[0, 0]}")
+                
+                w += (refs[i] - covs[i] @ w) * step
+        
+        return w
+    
+    @sequre
+    def _predict(mpc, X: T, w: T, noise_scale: float) -> T:
+        pred = X.pad_with_value(1, 1, 1, mpc) @ w
+
+        if noise_scale != 0.0:
+            pred += pred.rand("normal", mpc) * noise_scale
+        
+        return pred
+    
+    @sequre
+    def _loss(mpc, X: T, y: T, w: T) -> T:
+        l = y - X @ w
+        return l.T @ l
+    
+    @sequre 
+    def _closed_form(mpc, X: T, y: T) -> T:
+        # TODO: The inverse needs to be upscaled for large scale data in CKKS:
+        # return inv(mpc, X.T @ X) * 100 @ X.T @ y * 0.01
+        return inv(mpc, X.T @ X) @ X.T @ y
