@@ -4,7 +4,7 @@ This repository contains a source code for Secure MICE algorithm implemented in 
 
 ## Run Secure-MICE benchmarks
 
-To run Secure-MICE benchmarks, firt run all cells in [Jupyter notebook](applications/offline/mi.ipynb) to generate data and obtain all non-secure, baseline results.
+To run Secure-MICE benchmarks, first run all cells in [Jupyter notebook](applications/offline/mi.ipynb) to generate data and obtain all non-secure, baseline results.
 
 Then run all other benchmarks via docker/podman:
 
