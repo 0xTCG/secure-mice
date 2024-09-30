@@ -12,4 +12,4 @@ Then run all other benchmarks via docker/podman:
 sudo podman run --mount type=bind,source=$(pwd)/data,destination=/sequre/data --mount type=bind,source=$(pwd)/applications/config,destination=/sequre/applications/config --security-opt label=disable -e "CODON_DEBUG=lt" --privileged --rm -t hsmile/secure-mice:latest scripts/run.sh -release benchmarks --mi --jit --local
 ```
 
-Use [configuration module](config/mi.toml) to configure different benchmark scenarios.
+Use [configuration module](applications/config/mi.toml) to configure different benchmark scenarios.
