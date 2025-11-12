@@ -1,6 +1,7 @@
 """ Multiple imputation experiments from https://www.nature.com/articles/s41467-020-19270-2 """
 
 import math, time
+import prg
 
 from tqdm import tqdm
 
@@ -61,12 +62,182 @@ class RegUnion[T]:
     
 
 def _match_model[T](mpc, scenario: str, secure_im_initial_w: T, im_optimizer: str) -> RegUnion[T]:
-    if scenario == "paper_scenario_2" or scenario == "log" or scenario == "midn_scenario_2":
+    if "scenario_2" in scenario or scenario == "log":
         return RegUnion(mpc, log=LogReg(secure_im_initial_w.copy(), im_optimizer))
-    elif scenario == "paper_scenario_1" or scenario == "lin" or scenario == "midn_scenario_1":
+    elif "scenario_1" in scenario or scenario == "lin":
         return RegUnion(mpc, lin=LinReg(secure_im_initial_w.copy(), im_optimizer))
     else:
         raise ValueError(f"Invalid scenario: {scenario}")
+
+
+def _generate_random_mi_data(mpc, case: int):
+    # NOTE: This method is for testing only. Proper data is generated in offline mi.ipynb.
+    # Case -1 loads data from data/mi/lin_input_matrix.txt
+    # Other cases generate random data from uniform distribution
+    miss_rows = []
+
+    if case == -1:
+        rows_per_party = 250
+        cols_per_party = 10
+        im_step_size = 1 / (1 << 11)
+        fm_step_size = 1 / (1 << 12)
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+        miss_rows = list(range(150))
+    elif case == 0:
+        rows_per_party = 50
+        cols_per_party = 10
+        im_step_size = 0.001
+        fm_step_size = 0.001
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+        miss_rows = list(range(10))
+    elif case == 1:
+        rows_per_party = 125
+        cols_per_party = 15
+        miss_rate = 50
+        im_step_size = 0.001
+        fm_step_size = 0.001
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+    elif case == 2:
+        rows_per_party = 250
+        cols_per_party = 30
+        miss_rate = 100
+        im_step_size = 1 / (1 << 11)
+        fm_step_size = 1 / (1 << 12)
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+    elif case == 3:
+        rows_per_party = 500
+        cols_per_party = 60
+        miss_rate = 200
+        im_step_size = 1 / (1 << 11)
+        fm_step_size = 1 / (1 << 12)
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+    else:
+        assert case == 4, "Invalid case"
+    
+    im_initial_w = ones((cols_per_party, 1))
+    fm_initial_w = ones((cols_per_party + 1, 1))
+    
+    if case == 4:
+        rows_per_party = 34144
+        cols_per_party = 204
+        miss_rate = 54934
+        im_step_size = 1 / (1 << 17)
+        fm_step_size = 1 / (1 << 19)
+        im_initial_w = ones((cols_per_party, 1)) * (1 / (1 << 10))
+        fm_initial_w = ones((cols_per_party + 1, 1)) * (1 / (1 << 10))
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+
+    miss_col = 0
+    miss_val = 0.0
+    labels_noise_scale = 0.0
+
+    if case > 0:  # Generate data
+        with mpc.randomness.seed_switch(-1):
+            complete_data = ndarray.rand(((mpc.comms.number_of_parties - 1) * rows_per_party, cols_per_party), "uniform")
+    else:  # Load data
+        with open("data/mi/siMICE/scenario_1/500/non_tampered_data.txt") as f:
+            complete_data = array(read_matrix(f, rows_per_party * (mpc.comms.number_of_parties - 1), cols_per_party, False, TP=float))
+    
+    data = complete_data.copy()
+    
+    if miss_rows:
+        for i in miss_rows:
+            data[i][miss_col] = miss_val
+    else:
+        miss_rows_set = set[int]()
+        with mpc.randomness.seed_switch(-1):
+            for _ in range(miss_rate):
+                miss_row = int.rand(len(data) - 1, "uniform")
+                data[miss_row][miss_col] = miss_val
+                miss_rows_set.add(miss_row)
+        miss_rows = sorted(list(miss_rows_set))
+    
+    complete_data += 1 / (1 << 10)  # To avoid MPC fp underflow
+    with mpc.randomness.seed_switch(-1):
+        labels = complete_data @ ndarray.rand((cols_per_party, 1), "uniform") + 1.0
+        
+        if labels_noise_scale != 0.0:
+            # labels += ndarray.rand(labels.shape, "normal")  # Add some noise
+            raise NotImplementedError("TODO: Implement random noise as in offline mi.ipynb")
+    
+    return (data, complete_data, labels, miss_rows,
+        im_initial_w, fm_initial_w, im_step_size, fm_step_size,
+        im_optimizer, fm_optimizer)
+
+
+def _generate_scenario_mi_data(mpc, case: int, type: str):
+    # NOTE: Data is generated in offline mi.ipynb. No need to generate it here. This method is left here for reference.
+    @python
+    def py_bernoulli(n: int, p: list[float], seed: int) -> List[int]:
+        import numpy as np
+        np.random.seed(seed)
+        return np.random.binomial(n, p).tolist()
+    
+    # Generate data as in https://www.nature.com/articles/s41467-020-19270-2
+    assert type in {"linear", "logistic"}, f"Invalid type of MI data {type}"
+
+    if case == 0:
+        rows_per_party = 500
+        rows = rows_per_party * (mpc.comms.number_of_parties - 1)
+        im_step_size = 1 / (1 << 11)
+        fm_step_size = 1 / (1 << 12)
+        im_optimizer = "bgd"
+        fm_optimizer = "bgd"
+        labels_noise_scale = 0.0
+    else:
+        raise ValueError("Invalid case")
+
+    feature_count = 2
+
+    with mpc.randomness.seed_switch(-1):
+        # x_2 is from U(-3, 3)
+        x_2 = ndarray.rand((rows,), "uniform") * 6 - 3
+    
+        if type == "linear":
+            # Linear x_1 is from normal(mu=0.2 - 0.5*x_2, sigma=1.0)
+            x_1 = array([prg.gauss(mu=0.2 - 0.5 * x, sigma=1.0) for x in x_2.tolist()])
+        else:
+            # Logistic x_1 is from bernoulli(n=1, p=1 / (1 + exp(-0.2 + 0.5*x_2)))
+            x_1 = array(py_bernoulli(1, [(1 / (1 + math.exp(-0.2 + 0.5 * x))) for x in x_2.tolist()], prg.randint(0, 100)), dtype=float)
+    
+    complete_data = zeros((rows, 2), dtype=float)
+    for i in range(rows):
+        complete_data[i, 0] = x_1[i]
+        complete_data[i, 1] = x_2[i]
+    
+    miss_col = 0
+    miss_val = 0.0
+    
+    miss_rows = []
+    complete_data += 1 / (1 << 10)  # To avoid MPC fp underflow
+    data = complete_data.copy()
+    with mpc.randomness.seed_switch(-1):
+        labels = complete_data @ ones((feature_count, 1)) + 1.0  # Weights and bias are ones
+        
+        if labels_noise_scale != 0.0:
+            # labels += ndarray.rand_normal(labels.shape, "normal", scale=labels_noise_scale)  # Add some noise
+            raise NotImplementedError("TODO: Implement random noise as in offline mi.ipynb")
+        
+        for i in range(rows):
+            # The variable is missing with probability 1 / (1 + math.exp(-0.3 + 0.2 * labels[i][0] - 0.1 * x_2[i]))
+            if (1 / (1 + math.exp(-0.3 + 0.2 * labels[i][0] - 0.1 * x_2[i]))) > prg.random():
+                data[i][miss_col] = miss_val
+                miss_rows.append(i)
+
+    im_initial_w = ones((feature_count, 1))
+    fm_initial_w = ones((feature_count + 1, 1))
+
+    print(f"CP{mpc.pid}:\tGenerated data missing rate: {len(miss_rows)}/{len(complete_data)}")
+
+    return (data, labels, complete_data, miss_rows, miss_col,
+        im_initial_w, fm_initial_w, im_step_size, fm_step_size,
+        im_optimizer, fm_optimizer)
 
 
 def load_scenario_mi_data(scenario: str, rows_count: int, cols_count: int):
@@ -97,26 +268,32 @@ def load_scenario_mi_data(scenario: str, rows_count: int, cols_count: int):
         im_optimizer, fm_optimizer)
 
 
-def load_real_mi_data(rows_count: int = 86322, complete_data_size: int = 14940, feature_count: int = 15):
-    with open("data/mi/real/incomplete_data.txt") as f:
+def load_real_mi_data(name: str, rows_count: int = 86322, complete_data_size: int = 14940, feature_count: int = 15):
+    with open(f"data/mi/real/{name}/incomplete_data.txt") as f:
         incomplete_data = array(read_matrix(f, rows_count, feature_count, binary=False, TP=float))
-    with open("data/mi/real/complete_data.txt") as f:
+    with open(f"data/mi/real/{name}/complete_data.txt") as f:
         complete_data = array(read_matrix(f, complete_data_size, feature_count, binary=False, TP=float))
-    with open("data/mi/real/labels.txt") as f:
+    with open(f"data/mi/real/{name}/labels.txt") as f:
         labels = array(read_matrix(f, rows_count, 1, binary=False, TP=float))
-    with open("data/mi/real/miss_rows.txt") as f:
+    with open(f"data/mi/real/{name}/complete_labels.txt") as f:
+        complete_labels = array(read_matrix(f, complete_data_size, 1, binary=False, TP=float))
+    with open(f"data/mi/real/{name}/miss_rows.txt") as f:
         miss_rows = read_matrix(f, feature_count, rows_count, binary=False, TP=int)
-    with open("data/mi/real/col_types.txt") as f:
+    with open(f"data/mi/real/{name}/col_types.txt") as f:
         col_types = [line.strip() for line in f.readlines()]
     
-    im_step_size = 1 / (1 << 17)
-    fm_step_size = 1 / (1 << 19)
-    im_initial_w = ones((feature_count, 1)) * (1 / (1 << 10))
-    fm_initial_w = ones((feature_count + 1, 1)) * (1 / (1 << 10))
+    im_factor = 13 if "balanced" in name else 17
+    fm_factor = 11 if "balanced" in name else 19
+    w_factor = 10
+    
+    im_step_size = 1 / (1 << im_factor)
+    fm_step_size = 1 / (1 << fm_factor)
+    im_initial_w = ones((feature_count, 1)) * (1 / (1 << w_factor))
+    fm_initial_w = ones((feature_count + 1, 1)) * (1 / (1 << w_factor))
     im_optimizer = "bgd"
     fm_optimizer = "bgd"
 
-    return (incomplete_data, complete_data, labels, miss_rows, col_types,
+    return (incomplete_data, complete_data, labels, complete_labels,miss_rows, col_types,
         im_initial_w, fm_initial_w, im_step_size, fm_step_size,
         im_optimizer, fm_optimizer)
 
@@ -185,7 +362,9 @@ def evaluate_scenario(
     imputation_diff_mean = imputation_abs_diff.mean()
     imputation_diff_std = imputation_abs_diff.std()
     imputation_accuracy = ([((imputed_col == expected_imputation).astype(int).sum() / len(expected_imputation)) for imputed_col in imputed_cols]).mean()
-    imputation_auc = ([py_roc_auc(expected_imputation.tolist(), imputed_col.tolist()) for imputed_col in imputed_cols_prob]).mean()
+    imputation_auc = -1.0
+    if "_2" in msg:
+        imputation_auc = ([py_roc_auc(expected_imputation.tolist(), imputed_col.tolist()) for imputed_col in imputed_cols_prob]).mean()
 
     return secure_mi.model.coef_.reveal(mpc), y_hat_y_mean, y_hat_y_sd, imputation_diff_mean, imputation_diff_std, imputation_accuracy, imputation_auc
 
@@ -223,8 +402,13 @@ def benchmark_scenario(mpc, backend: Static[str], msg: Static[str], runs_count: 
     return coefs, y_hat_y_means, y_hat_y_sds, imp_means, imp_sds, imp_accs, imp_aucs, runtimes, network_bws
 
 
-def evaluate_real_setup(mpc, backend: Static[str], real_data, mi_factor: int, im_epochs: int, fm_epochs: int, noise_scale: float, dump_data: bool, verbose: bool, modulus):
-    (incomplete_data, complete_data, labels,
+def evaluate_real_setup(mpc, name: Static[str], backend: Static[str], real_data, mi_factor: int, im_epochs: int, fm_epochs: int, noise_scale: float, dump_data: bool, verbose: bool, modulus):
+    @python
+    def py_roc_auc(y_true: list[float], y_score: list[float]) -> float:
+        from sklearn.metrics import roc_auc_score
+        return roc_auc_score(y_true, y_score)
+    
+    (incomplete_data, complete_data, labels, complete_labels,
      miss_row_masks, col_types,
      im_initial_w, fm_initial_w, im_step_size, fm_step_size,
      im_optimizer, fm_optimizer) = real_data
@@ -245,10 +429,12 @@ def evaluate_real_setup(mpc, backend: Static[str], real_data, mi_factor: int, im
         compile_error("Invalid backend provided")
     
     secure_impute_models = [_match_model(mpc, col_type, secure_im_initial_w, im_optimizer) for col_type in col_types]
-    secure_fit_model = LinReg(secure_fm_initial_w, fm_optimizer)
+    if name != "balanced_mimic" and name != "mimic" and name != "gcasr":
+        compile_error("Only mimic and gcasr datasets are supported in real setup evaluation")
+    secure_fit_model = LinReg(secure_fm_initial_w, fm_optimizer) if name == "gcasr" else LogReg(secure_fm_initial_w, fm_optimizer)
     
     secure_mi, secure_imputed_datasets = MICE(mi_factor, secure_impute_models, secure_fit_model).fit(
-        mpc, secure_incomplete_data, secure_complete_data, secure_labels, miss_row_masks,
+        mpc, secure_incomplete_data, secure_labels, miss_row_masks,
         im_step_size, fm_step_size, im_epochs, fm_epochs, noise_scale, verbose=verbose)
     
     if dump_data:
@@ -257,8 +443,13 @@ def evaluate_real_setup(mpc, backend: Static[str], real_data, mi_factor: int, im
             if mpc.pid == 2:
                 log("", revealed_data, path=f'data/mi/dump/sequre_imputed_dataset_real_{i + 1}.txt', mode='w', separator=' ')
     
-    predicted_data = secure_mi.model.predict(mpc, secure_incomplete_data).reveal(mpc)
-    abs_diff = (predicted_data - labels).abs()
+    predicted_data = secure_mi.model.predict(mpc, secure_complete_data).reveal(mpc)
+
+    if "mimic" in name:
+        print(f"CP{mpc.pid}:\t MIMIC AUC", py_roc_auc(complete_labels.flatten().tolist(), predicted_data.flatten().tolist()))
+        print(f"CP{mpc.pid}:\t MIMIC Accuracy", ((predicted_data > 0.5).astype(int) == complete_labels.astype(int)).astype(int).mean())
+
+    abs_diff = (predicted_data - complete_labels).abs()
     assert abs_diff.shape == predicted_data.shape
     
     y_hat_y_mean = abs_diff.mean()
@@ -267,7 +458,7 @@ def evaluate_real_setup(mpc, backend: Static[str], real_data, mi_factor: int, im
     return y_hat_y_mean, y_hat_y_sd
 
 
-def benchmark_real_setup(mpc, backend: Static[str], runs_count: int, real_data, mi_factor: int,
+def benchmark_real_setup(mpc, name: Static[str], backend: Static[str], runs_count: int, real_data, mi_factor: int,
                          im_epochs: int, fm_epochs: int, noise_scale: float,
                          dump_data: bool, verbose: bool, modulus):
     y_hat_y_means = zeros((runs_count,))
@@ -277,7 +468,7 @@ def benchmark_real_setup(mpc, backend: Static[str], runs_count: int, real_data, 
     
     for i in tqdm(mpc, range(runs_count), "Evaluating real setup"):
         time_s, net_s = time.time(), mpc.stats.bytes_sent
-        y_hat_y_mean, y_hat_y_sd = evaluate_real_setup(mpc, backend, real_data, mi_factor, im_epochs, fm_epochs, noise_scale, dump_data, verbose, modulus)
+        y_hat_y_mean, y_hat_y_sd = evaluate_real_setup(mpc, name, backend, real_data, mi_factor, im_epochs, fm_epochs, noise_scale, dump_data, verbose, modulus)
         time_e, net_e = time.time(), mpc.stats.bytes_sent
         
         y_hat_y_means[i] = y_hat_y_mean
@@ -285,7 +476,7 @@ def benchmark_real_setup(mpc, backend: Static[str], runs_count: int, real_data, 
         runtimes[i] = time_e - time_s
         network_bws[i] = net_e - net_s
     
-    return zeros((runs_count, 15)), y_hat_y_means, y_hat_y_sds, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, runtimes, network_bws
+    return zeros((runs_count, 17 if "mimic" in name else 15)), y_hat_y_means, y_hat_y_sds, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, zeros((runs_count,)) - 1, runtimes, network_bws
 
 
 def print_stats(mpc, msg: Static[str], coefs, biases, sds, imp_biases, imp_sds, imp_accs, imp_aucs, runtimes, network_bws):
@@ -349,13 +540,20 @@ def benchmark_mi(mpc, backend: Static[str], mi_factor: int, im_epochs: int, fm_e
     
         e2e_scenario_run(mpc, "paper_scenario_1", backend, *paper_scenario_params)
         e2e_scenario_run(mpc, "paper_scenario_2", backend, *paper_scenario_params)
+
+        e2e_scenario_run(mpc, "paper_scenario_1_mnar", backend, *paper_scenario_params)
+        e2e_scenario_run(mpc, "paper_scenario_2_mnar", backend, *paper_scenario_params)
     
-    if run_real_setup:  # Real setup not implemented in Shechi
-        # Real data
-        real = load_real_mi_data()
+    if run_real_setup:
+        real_gcasr = load_real_mi_data("gcasr", 86322, 14940, 15)
+        real_mimic_balanced = load_real_mi_data("balanced_mimic", 6890, 305, 17)
         
-        real_stats = benchmark_real_setup(
-            mpc, backend, real_setup_runs_count, real, mi_factor,
+        real_gcasr_stats = benchmark_real_setup(
+            mpc, "gcasr", backend, real_setup_runs_count, real_gcasr, mi_factor,
+            im_epochs, fm_epochs, noise_scale, dump_data, verbose, modulus)
+        real_mimic_balanced_stats = benchmark_real_setup(
+            mpc, "balanced_mimic", backend, real_setup_runs_count, real_mimic_balanced, mi_factor,
             im_epochs, fm_epochs, noise_scale, dump_data, verbose, modulus)
 
-        print_stats(mpc, "Real data", *real_stats)
+        print_stats(mpc, "Real data (GCASR)", *real_gcasr_stats)
+        print_stats(mpc, "Real data (MIMIC balanced)", *real_mimic_balanced_stats)
