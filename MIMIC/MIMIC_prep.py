@@ -6,7 +6,7 @@ import pandas as pd
 from pathlib import Path
 
 # ========= CONFIG =========
-PATH = Path("MIMIC")  # <-- change if needed
+PATH = Path("MIMIC-large")  # <-- change if needed
 OUT_CSV = PATH / "icu_first2h_features.csv"
 
 # ========= HELPERS =========
