@@ -1,6 +1,6 @@
 # Secure Multiple Imputation with Chained Equations (Secure MICE)
 
-This repository contains a source code for Secure MICE algorithm implemented in Sequre. While this codebase can be used as a standalone, Secure MICE is actually implemented as an integral part of [Sequre framework](https://github.com/0xTCG/sequre).
+This repository contains a source code for Secure MICE algorithm implemented in Sequre. While this codebase can be used as a standalone, Secure MICE is implemented as an integral part of [Sequre framework](https://github.com/0xTCG/sequre).
 
 ## Run Secure-MICE benchmarks
 
